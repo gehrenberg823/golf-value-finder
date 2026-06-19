@@ -12,7 +12,7 @@ Run:
     python3 app.py          # then open http://127.0.0.1:5000
 """
 from __future__ import annotations
-import csv, io, re, time, unicodedata
+import csv, io, os, re, time, unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import requests
@@ -23,7 +23,7 @@ KALSHI = "https://api.elections.kalshi.com/trade-api/v2"
 HDR = {"User-Agent": "Mozilla/5.0"}
 
 # DataGolf in-play predictions feed (probabilities for win / make cut / top N).
-DATAGOLF_KEY = "6c6632b4c094506ccd5e06e1b6d9"
+DATAGOLF_KEY = os.environ.get("DATAGOLF_KEY") or "6c6632b4c094506ccd5e06e1b6d9"
 DATAGOLF_TOUR = {        # our tour name -> DataGolf tour code
     "PGA Tour": "pga", "LIV Golf": "liv",
     "DP World Tour": "euro", "Korn Ferry Tour": "kft",
@@ -449,5 +449,6 @@ function sortTable(th){
 
 
 if __name__ == "__main__":
-    print("Golf value finder -> http://127.0.0.1:5000")
-    app.run(port=5000, debug=False)
+    port = int(os.environ.get("PORT", 5000))
+    print(f"Golf value finder -> http://127.0.0.1:{port}")
+    app.run(host="0.0.0.0", port=port, debug=False)

@@ -1,0 +1,13 @@
+# Render Blueprint: one free web service running the Flask app.
+# 1 worker (the app keeps the last upload in process memory, so all requests
+# must hit the same worker); long timeout because a full Kalshi sweep can take ~70s.
+services:
+  - type: web
+    name: golf-value-finder
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --timeout 180 --bind 0.0.0.0:$PORT
+    envVars:
+      - key: DATAGOLF_KEY
+        sync: false
