@@ -58,8 +58,13 @@ def tour_markets(tour):
     return [(col, s[col], label) for col, label in MARKET_DEFS if col in s]
 
 # Latest result kept in memory so a page reload shows the last upload.
-STATE = {"rows": None, "filename": None, "when": None, "event": None, "warnings": [],
-         "tour": "PGA Tour", "csv_text": None}
+STATE = {"rows": None, "filename": None, "event": None, "warnings": [],
+         "tour": "PGA Tour", "csv_text": None,
+         "proj_when": None, "kalshi_when": None, "score_when": None}
+
+
+def now_str() -> str:
+    return datetime.now().astimezone().strftime("%b %-d · %-I:%M %p %Z")
 
 
 # ------------------------------------------------------------- helpers --------
@@ -281,8 +286,10 @@ def scores():
         sv = score_view({c: r.get(c) for c in SCORE_COLS}) if nm else None
         if sv:
             out[nm] = sv
-    when = (data.get("info") or {}).get("last_update", "") if isinstance(data, dict) else ""
-    return {"scores": out, "when": when}
+    feed_when = (data.get("info") or {}).get("last_update", "") if isinstance(data, dict) else ""
+    ts = now_str()
+    STATE["score_when"] = ts
+    return {"scores": out, "when": ts, "feed_when": feed_when}
 
 
 @app.route("/orderbook/<path:ticker>", methods=["GET"])
@@ -314,9 +321,9 @@ def upload():
         tour = "PGA Tour"
     text = f.read().decode("utf-8", "replace")
     rows, event_label, warnings = build_rows(text, tour)
+    ts = now_str()
     STATE.update(rows=rows, filename=f.filename, event=event_label, tour=tour, csv_text=text,
-                 when=datetime.now().astimezone().strftime("%a %b %-d, %Y · %-I:%M %p %Z"),
-                 warnings=warnings)
+                 proj_when=ts, kalshi_when=ts, score_when=ts, warnings=warnings)
     return redirect("/")
 
 
@@ -332,9 +339,9 @@ def refresh():
         STATE.update(tour=tour, warnings=[f"DataGolf refresh failed: {e}"])
         return redirect("/")
     rows, event_label, warnings = build_rows(text, tour)
+    ts = now_str()
     STATE.update(rows=rows, filename="DataGolf (live)", event=event_label, tour=tour, csv_text=text,
-                 when=datetime.now().astimezone().strftime("%a %b %-d, %Y · %-I:%M %p %Z"),
-                 warnings=warnings)
+                 proj_when=ts, kalshi_when=ts, score_when=ts, warnings=warnings)
     return redirect("/")
 
 
@@ -347,8 +354,7 @@ def refresh_kalshi():
         STATE.update(warnings=["Load projections first, then refresh Kalshi prices."])
         return redirect("/")
     rows, event_label, warnings = build_rows(text, tour)
-    STATE.update(rows=rows, event=event_label, warnings=warnings,
-                 when=datetime.now().astimezone().strftime("%a %b %-d, %Y · %-I:%M %p %Z"))
+    STATE.update(rows=rows, event=event_label, warnings=warnings, kalshi_when=now_str())
     return redirect("/")
 
 
@@ -368,6 +374,8 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .btn-now{background:#373e47;padding:7px 13px;font-size:12.5px}
  .sel{background:var(--card);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:14px;cursor:pointer}
  .warn{color:#d29922;font-size:12px;margin:0 0 14px}
+ .stamps{display:flex;gap:20px;flex-wrap:wrap;color:var(--mut);font-size:12px;margin:0 0 18px}
+ .stamps b{color:var(--txt);font-weight:600}
  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 16px}
  .tab{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:5px 14px;
    font-size:12.5px;color:var(--mut);cursor:pointer;user-select:none}
@@ -414,12 +422,19 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     <button type="button" class="btn btn-k" onclick="kRefresh()">↻ Refresh Kalshi Prices</button>
     <button type="button" class="btn" onclick="document.getElementById('file').click()">⬆ Upload Projections CSV</button>
   </form>
-  {% if st.when %}<span class="meta"><b style="color:var(--txt)">{{ st.tour }}</b> · {{ st.filename }} · event <b style="color:var(--txt)">{{ st.event or '?' }}</b> · loaded {{ st.when }}</span>{% endif %}
+  {% if st.rows %}<span class="meta"><b style="color:var(--txt)">{{ st.tour }}</b> · {{ st.filename }} · event <b style="color:var(--txt)">{{ st.event or '?' }}</b></span>{% endif %}
   <button type="button" class="btn btn-now" id="updnow" onclick="updateNow()" title="Pull live scores from DataGolf right now (scores only)">↻ Update now</button>
   <label class="auto" title="Update live scores from DataGolf every 5 minutes (scores only — does not re-fetch projections or Kalshi prices)">
     <input type="checkbox" id="auto"> Auto-update scores (5 min)</label>
-  <span id="scoreStamp" class="meta"></span>
 </div>
+
+{% if st.rows %}
+<div class="stamps">
+  <span>Scoreboard: <b id="ts-score">{{ st.score_when or '—' }}</b></span>
+  <span>Projections: <b id="ts-proj">{{ st.proj_when or '—' }}</b></span>
+  <span>Kalshi: <b id="ts-kalshi">{{ st.kalshi_when or '—' }}</b></span>
+</div>
+{% endif %}
 
 {% for w in st.warnings %}<div class="warn">⚠ {{ w }}</div>{% endfor %}
 
@@ -493,8 +508,8 @@ function pullScores(){
   const tour = document.querySelector('select[name=tour]').value;
   return fetch('/scores?tour='+encodeURIComponent(tour)).then(r=>r.json()).then(d=>{
     if(d && d.scores) applyScores(d.scores);
-    const m = document.getElementById('scoreStamp');
-    if(m && d && d.when) m.textContent = '· scores updated '+d.when;
+    const m = document.getElementById('ts-score');
+    if(m && d && d.when) m.textContent = d.when;
   }).catch(()=>{});
 }
 function dgRefresh(){
