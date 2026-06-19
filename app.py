@@ -243,7 +243,7 @@ def build_rows(csv_text: str, tour: str):
             rows.append({"player": rec["display"], "proj": p, "side": side, "price": price,
                          "edge": edge, "ev_pct": ev_pct, "link": link,
                          "ticker": kinfo["ticker"] if kinfo else None,
-                         "score": rec.get("score")})
+                         "score": rec.get("score"), "key": nm})
         # sort: biggest executable edge first, unpriced last
         rows.sort(key=lambda x: (x["edge"] is None, -(x["edge"] or 0)))
         priced = sum(1 for r in rows if r["side"] is not None)
@@ -259,6 +259,30 @@ def build_rows(csv_text: str, tour: str):
 @app.route("/", methods=["GET"])
 def index():
     return render_template_string(PAGE, st=STATE, tours=TOURS)
+
+
+@app.route("/scores", methods=["GET"])
+def scores():
+    """Live scores only — one DataGolf call, no Kalshi. Returns {norm_name: score_view}."""
+    tour = request.args.get("tour", STATE.get("tour") or "PGA Tour")
+    code = DATAGOLF_TOUR.get(tour)
+    if not code:
+        return {"scores": {}, "when": ""}
+    url = (f"https://feeds.datagolf.com/preds/in-play?tour={code}"
+           f"&dead_heat=no&odds_format=percent&key={DATAGOLF_KEY}")
+    try:
+        data = requests.get(url, headers=HDR, timeout=40).json()
+    except Exception:
+        return {"scores": {}, "when": ""}
+    rows = data.get("data") if isinstance(data, dict) else data
+    out = {}
+    for r in (rows or []):
+        nm = norm_name(r.get("player_name", ""))
+        sv = score_view({c: r.get(c) for c in SCORE_COLS}) if nm else None
+        if sv:
+            out[nm] = sv
+    when = (data.get("info") or {}).get("last_update", "") if isinstance(data, dict) else ""
+    return {"scores": out, "when": when}
 
 
 @app.route("/orderbook/<path:ticker>", methods=["GET"])
@@ -371,6 +395,9 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .obt td{padding:1px 14px 1px 0;border:none;text-align:right;font-size:12px;color:var(--mut)}
  .obt tr.best td{color:var(--txt);font-weight:700}
  .obempty{color:var(--mut);font-size:12px}
+ .auto{color:var(--mut);font-size:12px;display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none}
+ .auto input{cursor:pointer;margin:0}
+ td.flash{animation:fl 1s ease}@keyframes fl{from{background:rgba(63,185,80,.25)}to{background:transparent}}
 </style></head><body><div class="wrap">
 <h1>Golf — Projections vs Kalshi</h1>
 <p class="sub">Upload your simulation CSV. <b>Buy</b> = the side (Yes/No) with the better edge vs the actual price you'd pay on Kalshi.
@@ -387,6 +414,9 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     <button type="button" class="btn" onclick="document.getElementById('file').click()">⬆ Upload Projections CSV</button>
   </form>
   {% if st.when %}<span class="meta"><b style="color:var(--txt)">{{ st.tour }}</b> · {{ st.filename }} · event <b style="color:var(--txt)">{{ st.event or '?' }}</b> · loaded {{ st.when }}</span>{% endif %}
+  <label class="auto" title="Update live scores from DataGolf every 5 minutes (scores only — does not re-fetch projections or Kalshi prices)">
+    <input type="checkbox" id="auto"> Auto-update scores (5 min)</label>
+  <span id="scoreStamp" class="meta"></span>
 </div>
 
 {% for w in st.warnings %}<div class="warn">⚠ {{ w }}</div>{% endfor %}
@@ -415,7 +445,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
       <th onclick="sortTable(this)" class="sorted-desc">Edge</th>
     </tr></thead><tbody>
     {% for r in m.rows %}
-      <tr data-ticker="{{ r.ticker or '' }}" class="{% if r.edge is not none and r.edge > 0.03 %}big{% endif %}">
+      <tr data-ticker="{{ r.ticker or '' }}" data-key="{{ r.key }}" class="{% if r.edge is not none and r.edge > 0.03 %}big{% endif %}">
         <td data-v="{{ r.player }}">{% if r.ticker %}<span class="pname" onclick="toggleOB(this)">{{ r.player }}</span>{% else %}{{ r.player }}{% endif %}{% if r.link %} <a class="extlink" href="{{ r.link }}" target="_blank" rel="noopener" title="Open on Kalshi">↗</a>{% endif %}</td>
         {% set s = r.score %}
         <td data-v="{{ s.pos_v if s else '' }}">{{ s.pos if s else '—' }}</td>
@@ -434,6 +464,37 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 {% endif %}
 
 <script>
+// --- live scores (scores-only, no reload, no Kalshi) ---
+function setCell(td, v, text, color){
+  if(!td) return;
+  const changed = td.textContent !== text;
+  td.dataset.v = (v===''||v===null||v===undefined)?'':v;
+  td.textContent = text;
+  if(color){
+    td.classList.remove('pos','negv');
+    if(typeof v==='number' && v<0) td.classList.add('pos');
+    else if(typeof v==='number' && v>0 && v<9999) td.classList.add('negv');
+  }
+  if(changed){ td.classList.remove('flash'); void td.offsetWidth; td.classList.add('flash'); }
+}
+function applyScores(map){
+  document.querySelectorAll('tr[data-key]').forEach(tr=>{
+    const s = map[tr.dataset.key]; if(!s) return;
+    const c = tr.cells;
+    setCell(c[1], s.pos_v, s.pos, false);
+    setCell(c[2], s.total_v, s.total_d, true);
+    setCell(c[3], s.today_v, s.today_d, true);
+    setCell(c[4], (s.thru_v>=0?s.thru_v:''), s.thru_d, false);
+  });
+}
+function pullScores(){
+  const tour = document.querySelector('select[name=tour]').value;
+  fetch('/scores?tour='+encodeURIComponent(tour)).then(r=>r.json()).then(d=>{
+    if(d && d.scores) applyScores(d.scores);
+    const m = document.getElementById('scoreStamp');
+    if(m && d && d.when) m.textContent = '· scores updated '+d.when;
+  }).catch(()=>{});
+}
 function dgRefresh(){
   const tour = document.querySelector('select[name=tour]').value;
   const b = document.querySelector('.btn-dg');
@@ -491,6 +552,19 @@ function sortTable(th){
     return asc?va.localeCompare(vb):vb.localeCompare(va);
   }).forEach(r=>tbody.appendChild(r));
 }
+// --- auto-update scores toggle (every 5 min while tab is open) ---
+(function(){
+  const box = document.getElementById('auto'); if(!box) return;
+  box.checked = localStorage.getItem('golfAuto') === '1';
+  let timer = null;
+  function apply(){
+    localStorage.setItem('golfAuto', box.checked ? '1' : '0');
+    if(timer){ clearInterval(timer); timer = null; }
+    if(box.checked){ pullScores(); timer = setInterval(()=>{ if(!document.hidden) pullScores(); }, 5*60*1000); }
+  }
+  box.addEventListener('change', apply);
+  apply();
+})();
 </script>
 </div></body></html>"""
 
