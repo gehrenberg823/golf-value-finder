@@ -365,6 +365,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
    padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer}
  .btn:hover{filter:brightness(1.1)} .meta{color:var(--mut);font-size:12px}
  .btn-dg{background:#1f6feb} .btn-k{background:#6e40c9} .btn[disabled]{opacity:.6;cursor:wait}
+ .btn-now{background:#373e47;padding:7px 13px;font-size:12.5px}
  .sel{background:var(--card);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:14px;cursor:pointer}
  .warn{color:#d29922;font-size:12px;margin:0 0 14px}
  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 16px}
@@ -414,6 +415,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     <button type="button" class="btn" onclick="document.getElementById('file').click()">⬆ Upload Projections CSV</button>
   </form>
   {% if st.when %}<span class="meta"><b style="color:var(--txt)">{{ st.tour }}</b> · {{ st.filename }} · event <b style="color:var(--txt)">{{ st.event or '?' }}</b> · loaded {{ st.when }}</span>{% endif %}
+  <button type="button" class="btn btn-now" id="updnow" onclick="updateNow()" title="Pull live scores from DataGolf right now (scores only)">↻ Update now</button>
   <label class="auto" title="Update live scores from DataGolf every 5 minutes (scores only — does not re-fetch projections or Kalshi prices)">
     <input type="checkbox" id="auto"> Auto-update scores (5 min)</label>
   <span id="scoreStamp" class="meta"></span>
@@ -489,7 +491,7 @@ function applyScores(map){
 }
 function pullScores(){
   const tour = document.querySelector('select[name=tour]').value;
-  fetch('/scores?tour='+encodeURIComponent(tour)).then(r=>r.json()).then(d=>{
+  return fetch('/scores?tour='+encodeURIComponent(tour)).then(r=>r.json()).then(d=>{
     if(d && d.scores) applyScores(d.scores);
     const m = document.getElementById('scoreStamp');
     if(m && d && d.when) m.textContent = '· scores updated '+d.when;
@@ -552,18 +554,31 @@ function sortTable(th){
     return asc?va.localeCompare(vb):vb.localeCompare(va);
   }).forEach(r=>tbody.appendChild(r));
 }
-// --- auto-update scores toggle (every 5 min while tab is open) ---
+// --- auto-update scores (every 5 min) + manual "Update now" ---
+let _autoTimer = null;
+function scheduleAuto(){
+  const box = document.getElementById('auto'); if(!box) return;
+  localStorage.setItem('golfAuto', box.checked ? '1' : '0');
+  if(_autoTimer){ clearInterval(_autoTimer); _autoTimer = null; }
+  if(box.checked){ _autoTimer = setInterval(()=>{ if(!document.hidden) pullScores(); }, 5*60*1000); }
+}
+function onAutoToggle(){
+  const box = document.getElementById('auto');
+  if(box && box.checked) pullScores();   // immediate pull when turning auto on
+  scheduleAuto();
+}
+function updateNow(){
+  const b = document.getElementById('updnow');
+  if(b){ b.disabled = true; b.textContent = '↻ Updating…'; }
+  pullScores().finally(()=>{ if(b){ b.disabled = false; b.textContent = '↻ Update now'; } });
+  scheduleAuto();   // reset the clock so the next auto-update is 5 min after this manual one
+}
 (function(){
   const box = document.getElementById('auto'); if(!box) return;
   box.checked = localStorage.getItem('golfAuto') === '1';
-  let timer = null;
-  function apply(){
-    localStorage.setItem('golfAuto', box.checked ? '1' : '0');
-    if(timer){ clearInterval(timer); timer = null; }
-    if(box.checked){ pullScores(); timer = setInterval(()=>{ if(!document.hidden) pullScores(); }, 5*60*1000); }
-  }
-  box.addEventListener('change', apply);
-  apply();
+  box.addEventListener('change', onAutoToggle);
+  if(box.checked) pullScores();          // immediate pull on load if previously enabled
+  scheduleAuto();
 })();
 </script>
 </div></body></html>"""
