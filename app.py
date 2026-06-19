@@ -28,7 +28,9 @@ DATAGOLF_TOUR = {        # our tour name -> DataGolf tour code
     "PGA Tour": "pga", "LIV Golf": "liv",
     "DP World Tour": "euro", "Korn Ferry Tour": "kft",
 }
-DATAGOLF_COLS = ["player_name", "win", "make_cut", "top_5", "top_10", "top_20"]
+DATAGOLF_COLS = ["player_name", "win", "make_cut", "top_5", "top_10", "top_20",
+                 "current_pos", "current_score", "today", "thru", "round"]
+SCORE_COLS = ["current_pos", "current_score", "today", "thru", "round"]
 
 # CSV column -> display label (display order).
 MARKET_DEFS = [
@@ -160,6 +162,40 @@ def market_url(series, event, ticker):
 
 
 # ---------------------------------------------------------- core compute ------
+def _num(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def _rel(v):
+    """Golf score relative to par: 0 -> 'E', +n / -n otherwise."""
+    n = _num(v)
+    if n is None:
+        return None
+    n = int(round(n))
+    return "E" if n == 0 else (f"+{n}" if n > 0 else str(n))
+
+
+def score_view(raw: dict | None):
+    """Turn raw DataGolf score fields into display strings + numeric sort keys."""
+    if not raw:
+        return None
+    pos = (raw.get("current_pos") or "").strip()
+    total, today, thru = _num(raw.get("current_score")), _num(raw.get("today")), _num(raw.get("thru"))
+    if not pos and total is None and thru is None:
+        return None
+    pos_v = _num(re.sub(r"[^0-9.]", "", pos)) if pos else None
+    thru_d = ("F" if int(thru) >= 18 else str(int(thru))) if thru is not None else None
+    return {
+        "pos": pos or "—",            "pos_v": pos_v if pos_v is not None else 9999,
+        "total_d": _rel(total) or "—", "total_v": total if total is not None else 9999,
+        "today_d": _rel(today) or "—", "today_v": today if today is not None else 9999,
+        "thru_d": thru_d or "—",      "thru_v": thru if thru is not None else -1,
+    }
+
+
 def build_rows(csv_text: str, tour: str):
     """Parse projections CSV + fetch Kalshi -> per-market sorted value rows."""
     markets = tour_markets(tour)
@@ -179,6 +215,7 @@ def build_rows(csv_text: str, tour: str):
                 rec[col] = float(r[col]) if r.get(col) not in (None, "") else None
             except (ValueError, KeyError):
                 rec[col] = None
+        rec["score"] = score_view({c: r.get(c) for c in SCORE_COLS})
         proj[nm] = rec
 
     warnings, event_label, by_market = [], None, []
@@ -205,7 +242,8 @@ def build_rows(csv_text: str, tour: str):
                 ev_pct = (side_fair / price - 1.0) if price > 0 else None
             rows.append({"player": rec["display"], "proj": p, "side": side, "price": price,
                          "edge": edge, "ev_pct": ev_pct, "link": link,
-                         "ticker": kinfo["ticker"] if kinfo else None})
+                         "ticker": kinfo["ticker"] if kinfo else None,
+                         "score": rec.get("score")})
         # sort: biggest executable edge first, unpriced last
         rows.sort(key=lambda x: (x["edge"] is None, -(x["edge"] or 0)))
         priced = sum(1 for r in rows if r["side"] is not None)
@@ -367,6 +405,10 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     {% endif %}
     <table><thead><tr>
       <th onclick="sortTable(this)">Player</th>
+      <th onclick="sortTable(this)">Pos</th>
+      <th onclick="sortTable(this)">Total</th>
+      <th onclick="sortTable(this)">Rnd</th>
+      <th onclick="sortTable(this)">Thru</th>
       <th onclick="sortTable(this)">Proj</th>
       <th onclick="sortTable(this)">Buy</th>
       <th onclick="sortTable(this)">Price</th>
@@ -375,6 +417,11 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
     {% for r in m.rows %}
       <tr data-ticker="{{ r.ticker or '' }}" class="{% if r.edge is not none and r.edge > 0.03 %}big{% endif %}">
         <td data-v="{{ r.player }}">{% if r.ticker %}<span class="pname" onclick="toggleOB(this)">{{ r.player }}</span>{% else %}{{ r.player }}{% endif %}{% if r.link %} <a class="extlink" href="{{ r.link }}" target="_blank" rel="noopener" title="Open on Kalshi">↗</a>{% endif %}</td>
+        {% set s = r.score %}
+        <td data-v="{{ s.pos_v if s else '' }}">{{ s.pos if s else '—' }}</td>
+        <td data-v="{{ s.total_v if s else '' }}" class="{% if s and s.total_v < 0 %}pos{% elif s and 0 < s.total_v < 9999 %}negv{% endif %}">{{ s.total_d if s else '—' }}</td>
+        <td data-v="{{ s.today_v if s else '' }}" class="{% if s and s.today_v < 0 %}pos{% elif s and 0 < s.today_v < 9999 %}negv{% endif %}">{{ s.today_d if s else '—' }}</td>
+        <td data-v="{{ s.thru_v if s and s.thru_v >= 0 else '' }}">{{ s.thru_d if s else '—' }}</td>
         <td data-v="{{ r.proj }}">{{ '%.2f%%'|format(r.proj*100) }}</td>
         <td data-v="{{ r.side or '' }}" class="{% if r.side=='Yes' %}pos{% elif r.side=='No' %}negv{% endif %}">{{ r.side or '—' }}</td>
         <td data-v="{{ r.price if r.price is not none else '' }}">{% if r.price is not none %}{{ '%.1f¢'|format(r.price*100) }}{% else %}<span class="dash">—</span>{% endif %}</td>
@@ -449,6 +496,6 @@ function sortTable(th){
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 5050))   # 5000 is taken by macOS AirPlay Receiver
     print(f"Golf value finder -> http://127.0.0.1:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
